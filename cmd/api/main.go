@@ -14,6 +14,7 @@ import (
 	// package. Note that we alias this import to the blank identifier, to stop the Go
 	// compiler complaining that the package isn't being used.
 	_ "github.com/lib/pq"
+	"github.com/zhas-off/movie-service/internal/data"
 )
 
 // Declare a string containing the application version number
@@ -39,6 +40,7 @@ type application struct {
 	config   config
 	infoLog  *log.Logger
 	errorLog *log.Logger
+	models   data.Models
 }
 
 func main() {
@@ -86,7 +88,7 @@ func main() {
 
 	// Defer a call to db.Close() so that the connection pool is closed before the main()
 	// function exits.
-	func() {
+	defer func() {
 		err := db.Close()
 		if err != nil {
 			app.errorLog.Fatal(err)
@@ -94,6 +96,10 @@ func main() {
 	}()
 
 	infoLog.Printf("database connection pool established")
+
+	// Use the data.NewModels() function to add a Models struct to the application struct,
+	// passing in the database connection pool as a parameter.
+	app.models = data.NewModels(db)
 
 	// Use the httprouter instance returned by app.routes as the server handler.
 	srv := &http.Server{
