@@ -193,7 +193,8 @@ func (m MovieModel) GetAll(title string, genres []string, filters Filters) ([]*M
 	// Add an ORDER BY clause and interpolate the sort column and direction using fmt.Sprintf.
 	// Importantly, notice that we also include a secondary sort on the movie ID to ensure
 	// a consistent ordering. Furthermore, we include LIMIT and OFFSET clauses with placeholder
-	// parameter values for pagination implementation.
+	// parameter values for pagination implementation. The window function is used to calculate
+	// the total filtered rows which will be used in our pagination metadata.
 	query := fmt.Sprintf(`
 		SELECT count(*) OVER(), id, created_at, title, year, runtime, genres, version
 		FROM movies
@@ -227,6 +228,7 @@ func (m MovieModel) GetAll(title string, genres []string, filters Filters) ([]*M
 
 	// Declare a totalRecords variable
 	totalRecords := 0
+
 	// Initialize an empty slice to hold the movie data.
 	movies := []*Movie{}
 
@@ -238,7 +240,7 @@ func (m MovieModel) GetAll(title string, genres []string, filters Filters) ([]*M
 		// Scan the values from the row into the Movie struct. Again, note that we're using
 		// the pq.Array adapter on the genres field.
 		err := rows.Scan(
-			&totalRecords,
+			&totalRecords, // Scan the count from the window function into totalRecords.
 			&movie.ID,
 			&movie.CreatedAt,
 			&movie.Title,
@@ -261,9 +263,11 @@ func (m MovieModel) GetAll(title string, genres []string, filters Filters) ([]*M
 		return nil, Metadata{}, err
 	}
 
+	// Generate a Metadata struct, passing in the total record count and pagination parameters
+	// from the client.
 	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
 
-	// If everything went OK, then return the slice of the movies.
+	// If everything went OK, then return the slice of the movies and metadata.
 	return movies, metadata, nil
 }
 
