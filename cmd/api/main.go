@@ -4,10 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"flag"
-	"fmt"
-	"log"
-	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	// Import the pq driver so that it can register itself with the database/sql
@@ -16,6 +14,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/zhas-off/movie-service/internal/data"
 	"github.com/zhas-off/movie-service/internal/jsonlog"
+	"github.com/zhas-off/movie-service/internal/mailer"
 )
 
 // Declare a string containing the application version number
@@ -40,6 +39,13 @@ type config struct {
 		burst   int
 		enabled bool
 	}
+	smtp struct {
+		host     string
+		port     int
+		username string
+		password string
+		sender   string
+	}
 }
 
 // Define an application struct to hold dependencies for our HTTP handlers, helpers, and
@@ -48,6 +54,8 @@ type application struct {
 	config config
 	logger *jsonlog.Logger
 	models data.Models
+	mailer mailer.Mailer
+	wg     sync.WaitGroup
 }
 
 func main() {
@@ -62,7 +70,7 @@ func main() {
 
 	// Use the value of the GREENLIGHT_DB_DSN environment variable as the default value
 	// for our db-dsn command-line flag.
-	flag.StringVar(&cfg.db.dsn, "db-dsn", os.Getenv("GREENLIGHT_DB_DSN"), "PostgreSQL DSN")
+	flag.StringVar(&cfg.db.dsn, "db-dsn", "postgres://postgres:1234@localhost/greenlight?sslmode=disable", "PostgreSQL DSN")
 
 	// Read the connection pool settings from command-line flags into the config struct.
 	// Notice the default values that we're using?
@@ -79,13 +87,21 @@ func main() {
 	flag.IntVar(&cfg.limiter.burst, "limiter-burst", 4, "Rate limiter maximum burst")
 	flag.BoolVar(&cfg.limiter.enabled, "limiter-enabled", true, "Enable rate limiter")
 
+	// Read the SMTP server configuration settings into the config struct, using the
+	// Mailtrap settings as teh default values.
+	flag.StringVar(&cfg.smtp.host, "smtp-host", "smtp.mailtrap.io", "SMTP host")
+	flag.IntVar(&cfg.smtp.port, "smtp-port", 2525, "SMTP port")
+	flag.StringVar(&cfg.smtp.username, "smtp-username", "6d9fc418ac64b2", "SMTP username")
+	flag.StringVar(&cfg.smtp.password, "smtp-password", "27dd30dc8a5f72", "SMTP password")
+	flag.StringVar(&cfg.smtp.sender, "smtp-sender", "DoNotReply <94190cf739-5a6af4+1@inbox.mailtrap.io>", "SMTP sender")
+
 	flag.Parse()
 
 	// Initialize a new jsonlog.Logger which writes any messages *at or above* the INFO
 	// severity level to the standard out stream.
 	logger := jsonlog.NewLogger(os.Stdout, jsonlog.LevelInfo)
 
-	// Call the openDB() helper function (see below) to create teh connection pool,
+	// Call the openDB() helper function (see below) to create the connection pool,
 	// passing in the config struct. If this returns an error,
 	// we log it and exit the application immediately.
 	db, err := openDB(cfg)
@@ -108,35 +124,11 @@ func main() {
 		config: cfg,
 		logger: logger,
 		models: data.NewModels(db),
+		mailer: mailer.New(cfg.smtp.host, cfg.smtp.port, cfg.smtp.username, cfg.smtp.password, cfg.smtp.sender),
 	}
 
-	// Use the httprouter instance returned by app.routes as the server handler.
-	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.port),
-		Handler: app.routes(),
-		// Create a new Go log.Logger instance with the log.New() function, passing in our customer
-		// Logger as the first parameter.
-		// This will ensure that any log messages http.Server writes will be passed to our
-		// Logger.Write() method which will output a log entry in JSON format at the ERROR level.
-		// The "" and 0 indicate that the log.Logger instance should
-		// not use a prefix or any flags.
-		ErrorLog:     log.New(logger, "", 0),
-		IdleTimeout:  time.Minute,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-	}
-
-	// Again, we use the PrintInfo() method to write a "starting server" message at the INFO level.
-	// But this time we pass a map containing additional properties (the oeprating environment
-	// and server address) as the final parameters).
-	logger.PrintInfo("starting server", map[string]string{
-		"addr": srv.Addr,
-		"env":  cfg.env,
-	})
-
-	// Because the "err" variable is now already declared in the code above,
-	// we need to use the = operator here, instead of the := operator.
-	if err = srv.ListenAndServe(); err != nil {
+	// Call app.server() to start the server.
+	if err := app.serve(); err != nil {
 		// Log error and exit.
 		logger.PrintFatal(err, nil)
 	}
