@@ -15,6 +15,7 @@ import (
 	// compiler complaining that the package isn't being used.
 	_ "github.com/lib/pq"
 	"github.com/zhas-off/movie-service/internal/data"
+	"github.com/zhas-off/movie-service/internal/jsonlog"
 )
 
 // Declare a string containing the application version number
@@ -32,15 +33,21 @@ type config struct {
 		maxIdleConns int
 		maxIdleTime  string
 	}
+	// Add a new limiter struct containing fields for the request-per-second and burst
+	// values, and a boolean field which we can use to enable/disable rate limiting.
+	limiter struct {
+		rps     float64
+		burst   int
+		enabled bool
+	}
 }
 
-// Define an application struct to hold dependencides for our HTTP handlers, helpers, and
+// Define an application struct to hold dependencies for our HTTP handlers, helpers, and
 // middleware.
 type application struct {
-	config   config
-	infoLog  *log.Logger
-	errorLog *log.Logger
-	models   data.Models
+	config config
+	logger *jsonlog.Logger
+	models data.Models
 }
 
 func main() {
@@ -51,7 +58,7 @@ func main() {
 	// We default to using the port number 4000 and the environment "development" if no
 	// corresponding flags are provided.
 	flag.IntVar(&cfg.port, "port", 4000, "API server port")
-	flag.StringVar(&cfg.env, "env", "development", "Enviroment (development|staging|production")
+	flag.StringVar(&cfg.env, "env", "development", "Environment (development|staging|production")
 
 	// Use the value of the GREENLIGHT_DB_DSN environment variable as the default value
 	// for our db-dsn command-line flag.
@@ -66,56 +73,72 @@ func main() {
 	flag.StringVar(&cfg.db.maxIdleTime, "db-max-idle-time", "15m",
 		"PostgreSQL max connection idle time")
 
-	// Initialize a new infoLog which writes messages to the STDOUT stream, prefixed
-	// with the current date and time.
-	infoLog := log.New(os.Stdout, "", log.Ldate|log.Ltime)
-	errorLog := log.New(os.Stderr, "ERROR\t", log.Ldate|log.Ltime|log.Lshortfile)
+	// Read the limiter settings from the command-line flags into the config struct.
+	// We use true as the default for 'enabled' setting.
+	flag.Float64Var(&cfg.limiter.rps, "limiter-rps", 2, "Rate limiter maximum requests per second")
+	flag.IntVar(&cfg.limiter.burst, "limiter-burst", 4, "Rate limiter maximum burst")
+	flag.BoolVar(&cfg.limiter.enabled, "limiter-enabled", true, "Enable rate limiter")
 
-	// Declare an instance of the application struct, containing the config struct and the infoLog.
-	app := &application{
-		config:   cfg,
-		infoLog:  infoLog,
-		errorLog: errorLog,
-	}
+	flag.Parse()
+
+	// Initialize a new jsonlog.Logger which writes any messages *at or above* the INFO
+	// severity level to the standard out stream.
+	logger := jsonlog.NewLogger(os.Stdout, jsonlog.LevelInfo)
 
 	// Call the openDB() helper function (see below) to create teh connection pool,
 	// passing in the config struct. If this returns an error,
 	// we log it and exit the application immediately.
 	db, err := openDB(cfg)
 	if err != nil {
-		app.errorLog.Fatal(err)
+		logger.PrintFatal(err, nil)
 	}
 
 	// Defer a call to db.Close() so that the connection pool is closed before the main()
 	// function exits.
 	defer func() {
-		err := db.Close()
-		if err != nil {
-			app.errorLog.Fatal(err)
+		if err := db.Close(); err != nil {
+			logger.PrintFatal(err, nil)
 		}
 	}()
 
-	infoLog.Printf("database connection pool established")
+	logger.PrintInfo("database connection pool established", nil)
 
-	// Use the data.NewModels() function to add a Models struct to the application struct,
-	// passing in the database connection pool as a parameter.
-	app.models = data.NewModels(db)
+	// Declare an instance of the application struct, containing the config struct and the infoLog.
+	app := &application{
+		config: cfg,
+		logger: logger,
+		models: data.NewModels(db),
+	}
 
 	// Use the httprouter instance returned by app.routes as the server handler.
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.port),
-		Handler:      app.routes(),
+		Addr:    fmt.Sprintf(":%d", cfg.port),
+		Handler: app.routes(),
+		// Create a new Go log.Logger instance with the log.New() function, passing in our customer
+		// Logger as the first parameter.
+		// This will ensure that any log messages http.Server writes will be passed to our
+		// Logger.Write() method which will output a log entry in JSON format at the ERROR level.
+		// The "" and 0 indicate that the log.Logger instance should
+		// not use a prefix or any flags.
+		ErrorLog:     log.New(logger, "", 0),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 
-	// Start the HTTP server.
-	app.infoLog.Printf("starting the %s server on %s", cfg.env, srv.Addr)
-	// Because the err variable is now already declared in the code above,
+	// Again, we use the PrintInfo() method to write a "starting server" message at the INFO level.
+	// But this time we pass a map containing additional properties (the oeprating environment
+	// and server address) as the final parameters).
+	logger.PrintInfo("starting server", map[string]string{
+		"addr": srv.Addr,
+		"env":  cfg.env,
+	})
+
+	// Because the "err" variable is now already declared in the code above,
 	// we need to use the = operator here, instead of the := operator.
 	if err = srv.ListenAndServe(); err != nil {
-		app.errorLog.Fatal(err)
+		// Log error and exit.
+		logger.PrintFatal(err, nil)
 	}
 }
 

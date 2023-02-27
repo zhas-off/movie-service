@@ -56,7 +56,6 @@ func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Reques
 	// system-generated information.
 	err = app.models.Movies.Insert(movie)
 	if err != nil {
-		app.infoLog.Println("inside err if statement after movies insert")
 		app.serverErrorResponse(w, r, err)
 		return
 	}
@@ -72,17 +71,17 @@ func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Reques
 	// and the Location header.
 	err = app.writeJSON(w, http.StatusCreated, envelope{"movie": movie}, headers)
 	if err != nil {
-		app.infoLog.Println("inside err if statement after movies insert")
 		app.serverErrorResponse(w, r, err)
 	}
 }
 
-// showMovieHandler handles "Get /v1/movies/:id" endpoint. For now, it returns plain-text
-// placeholder response using the interpolated "id" parameter from the current URL
+// showMovieHandler handles the "GET /v1/movies/:id" endpoint and returns a JSON response of the
+// requested movie record. If there is an error a JSON formatted error is
+// returned.
 func (app *application) showMovieHandler(w http.ResponseWriter, r *http.Request) {
 	// When httprouter is parsing a request, any interpolated URL Parameters will be stored
 	// in the request context. We can use the ParamsFromContext() function to retrieve a slice
-	// containing these paremter names and values.
+	// containing these parameter names and values.
 	id, err := app.readIDParam(r)
 	if err != nil || id < 1 {
 		app.notFoundResponse(w, r)
@@ -112,6 +111,9 @@ func (app *application) showMovieHandler(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// updateMovieHandler handles "PATCH /v1/movies/:id" endpoint and returns a JSON response
+// of the updated movie record. If there is an error a JSON formatted error is
+// returned.
 func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract the movie ID from the URL.
 	id, err := app.readIDParam(r)
@@ -199,9 +201,10 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 			app.serverErrorResponse(w, r, err)
 
 		}
+		return
 	}
 
-	// WRite the updated movie record in a JSON response.
+	// Write the updated movie record in a JSON response.
 	err = app.writeJSON(w, http.StatusOK, envelope{"movie": movie}, nil)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
@@ -209,6 +212,9 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 
 }
 
+// deleteMovieHandler handles "DELETE /v1/movies/:id" endpoint and returns a 200 OK status code
+// with a success message in a JSON response. If there is an error a JSON formatted error is
+// returned.
 func (app *application) deleteMovieHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract the movie ID from the URL.
 	id, err := app.readIDParam(r)
@@ -238,8 +244,6 @@ func (app *application) deleteMovieHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *application) listMoviesHandler(w http.ResponseWriter, r *http.Request) {
-	// To keep things consistent with our other handlers, we'll define an input struct to hold
-	// the expected values from the request query string.
 	var input struct {
 		Title        string
 		Genres       []string
@@ -252,12 +256,13 @@ func (app *application) listMoviesHandler(w http.ResponseWriter, r *http.Request
 	// call r.URL.Query() to get the url.Values map containing the query string data.
 	qs := r.URL.Query()
 
-	// Use our helpers to extract the title and genres query string values, falling back to defaults
-	// of an empty string and an empty slice, respectively, if they are not provided by the client.
+	// Use our helpers to extract the title and genres query string values, falling back to the
+	// defaults of an empty string and an empty slice, respectively, if they are not provided
+	// by the client.
 	input.Title = app.readStrings(qs, "title", "")
 	input.Genres = app.readCSV(qs, "genres", []string{})
 
-	// Get the page and page_size query string value as integers. Notice that we set the default
+	// Ge the page and page_size query string value as integers. Notice that we set the default
 	// page value to 1 and default page_size to 20, and that we pass the validator instance
 	// as the final argument.
 	input.Filters.Page = app.readInt(qs, "page", 1, v)
@@ -282,7 +287,6 @@ func (app *application) listMoviesHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Dump the contents of the input struct in a HTTP response.
 	// Call the MovieModel.GetAll method to retrieve the movies, passing in the various filter
 	// parameters.
 	movies, metadata, err := app.models.Movies.GetAll(input.Title, input.Genres, input.Filters)
@@ -295,5 +299,4 @@ func (app *application) listMoviesHandler(w http.ResponseWriter, r *http.Request
 	if err := app.writeJSON(w, http.StatusOK, envelope{"movies": movies, "metadata": metadata}, nil); err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
-
 }

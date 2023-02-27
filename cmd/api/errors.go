@@ -5,11 +5,13 @@ import (
 	"net/http"
 )
 
-// logError method is a generic helper for logging an error message in *application.
-// Right now its a basic infoLog.Println, but we'll upgrade this later to
-// use structured logging and record additional info about the request.
+// logError method is a generic helper for logging an error message in *application, as well
+// as the requested method and request URL.
 func (app *application) logError(r *http.Request, err error) {
-	app.infoLog.Println(err)
+	app.logger.PrintError(err, map[string]string{
+		"request_method": r.Method,
+		"request_url":    r.URL.String(),
+	})
 }
 
 // errorResponse method is a generic helper for sending JSON-formatted error messages to the
@@ -70,4 +72,9 @@ func (app *application) failedValidationResponse(w http.ResponseWriter, r *http.
 func (app *application) editConflictResponse(w http.ResponseWriter, r *http.Request) {
 	message := "unable to update the record due to an edit conflict, please try again"
 	app.errorResponse(w, r, http.StatusConflict, message)
+}
+
+func (app *application) rateLimitExceededResponse(w http.ResponseWriter, r *http.Request) {
+	message := "rate limited exceeded"
+	app.errorResponse(w, r, http.StatusTooManyRequests, message)
 }
