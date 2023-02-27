@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"log"
 	"time"
 
 	"github.com/lib/pq"
@@ -11,7 +13,7 @@ import (
 )
 
 // Movie type whose fields describe the movie.
-// Note that the Runtime type uses a custom Runtime type instead of int32. Furthermore, the omitempy
+// Note that the Runtime type uses a custom Runtime type instead of int32. Furthermore, the omitempty
 // directive on the Runtime type will still work on this: if the Runtime field has the underlying
 // value 0, then it will be considered empty and omitted -- and the MarshalJSON() method won't
 // be called.
@@ -29,7 +31,9 @@ type Movie struct {
 // MovieModel struct wraps a sql.DB connection pool and allows us to work with Movie struct type
 // and the movies table in our database.
 type MovieModel struct {
-	DB *sql.DB
+	DB       *sql.DB
+	InfoLog  *log.Logger
+	ErrorLog *log.Logger
 }
 
 // Insert accepts a pointer to a movie struct, which should contain the data for the
@@ -38,7 +42,8 @@ func (m MovieModel) Insert(movie *Movie) error {
 	query := `
 		INSERT INTO movies (title, year, runtime, genres) 
 		VALUES ($1, $2, $3, $4) 
-		RETURNING id, created_at, version`
+		RETURNING id, created_at, version
+		`
 
 	// Create a context with a 3-second timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -66,7 +71,8 @@ func (m MovieModel) Get(id int64) (*Movie, error) {
 	query := `
 		SELECT id, created_at, title, year, runtime, genres, version
         FROM movies
- 		WHERE id = $1`
+ 		WHERE id = $1
+ 		`
 
 	var movie Movie
 
@@ -108,7 +114,8 @@ func (m MovieModel) Update(movie *Movie) error {
 		UPDATE movies
 		SET title = $1, year = $2, runtime = $3, genres = $4, version = version + 1
 		WHERE id = $5 AND version = $6
-		RETURNING version`
+		RETURNING version
+		`
 
 	// Create an args slice containing the values for the placeholder parameters.
 	args := []interface{}{
@@ -148,7 +155,8 @@ func (m MovieModel) Delete(id int64) error {
 
 	query := `
 		DELETE FROM movies
-		WHERE id = $1`
+		WHERE id = $1
+		`
 
 	// Create a context with a 3-second timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -179,22 +187,102 @@ func (m MovieModel) Delete(id int64) error {
 	return nil
 }
 
-// ValidateMovie runs validation checks on Movie type.
+// GetAll returns a list of movies in the form of a string of Movie type based on a set of
+// provided filters.
+func (m MovieModel) GetAll(title string, genres []string, filters Filters) ([]*Movie, Metadata, error) {
+	// Add an ORDER BY clause and interpolate the sort column and direction using fmt.Sprintf.
+	// Importantly, notice that we also include a secondary sort on the movie ID to ensure
+	// a consistent ordering. Furthermore, we include LIMIT and OFFSET clauses with placeholder
+	// parameter values for pagination implementation.
+	query := fmt.Sprintf(`
+		SELECT count(*) OVER(), id, created_at, title, year, runtime, genres, version
+		FROM movies
+		WHERE (to_tsvector('simple', title) @@ plainto_tsquery('simple', $1) OR $1 = '')
+		AND (genres @> $2 OR $2 = '{}')
+		ORDER BY %s %s, id ASC
+		LIMIT $3 OFFSET $4`,
+		filters.sortColumn(), filters.sortDirection())
+
+	// Create a context with a 3-second timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Organize our four placeholder parameter values in a slice.
+	args := []interface{}{title, pq.Array(genres), filters.limit(), filters.offset()}
+
+	// Use QueryContext to execute the query. This returns a sql.Rows result set containing
+	// the result.
+	rows, err := m.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, Metadata{}, err
+	}
+
+	// Importantly, defer a call to rows.Close() to ensure that the result set is closed
+	// before GetAll returns.
+	defer func() {
+		if err := rows.Close(); err != nil {
+			m.ErrorLog.Println(err)
+		}
+	}()
+
+	// Declare a totalRecords variable
+	totalRecords := 0
+	// Initialize an empty slice to hold the movie data.
+	movies := []*Movie{}
+
+	// Use rows.Next to iterate through the rows in the result set.
+	for rows.Next() {
+		// Initialize an empty Movie struct to hold the data for an individual movie.
+		var movie Movie
+
+		// Scan the values from the row into the Movie struct. Again, note that we're using
+		// the pq.Array adapter on the genres field.
+		err := rows.Scan(
+			&totalRecords,
+			&movie.ID,
+			&movie.CreatedAt,
+			&movie.Title,
+			&movie.Year,
+			&movie.Runtime,
+			pq.Array(&movie.Genres),
+			&movie.Version,
+		)
+		if err != nil {
+			return nil, Metadata{}, err
+		}
+
+		// Add the Movie struct to the slice
+		movies = append(movies, &movie)
+	}
+
+	// When the rows.Next() loop has finished, call rows.Err() to retrieve any error
+	// that was encountered during the iteration.
+	if err = rows.Err(); err != nil {
+		return nil, Metadata{}, err
+	}
+
+	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+
+	// If everything went OK, then return the slice of the movies.
+	return movies, metadata, nil
+}
+
+// ValidateMovie runs validation checks on the Movie type.
 func ValidateMovie(v *validator.Validator, movie *Movie) {
 	// Check movie.Title
 	v.Check(movie.Title != "", "title", "must be provided")
 	v.Check(len(movie.Title) <= 500, "title", "must not be more than 500 bytes long")
 
-	// Check input.Year
+	// Check movie.Year
 	v.Check(movie.Year != 0, "year", "must be provided")
 	v.Check(movie.Year >= 1888, "year", "must be greater than 1888")
 	v.Check(movie.Year <= int32(time.Now().Year()), "year", "must not be in the future")
 
-	// Check input.Runtime
+	// Check movie.Runtime
 	v.Check(movie.Runtime != 0, "runtime", "must be provided")
 	v.Check(movie.Runtime > 0, "runtime", "must be a positive integer")
 
-	// Check input.Genres
+	// Check movie.Genres
 	v.Check(movie.Genres != nil, "genres", "must be provided")
 	v.Check(len(movie.Genres) >= 1, "genres", "must contain at least 1 genre")
 	v.Check(len(movie.Genres) <= 5, "genres", "must not contain more than 5 genres")
