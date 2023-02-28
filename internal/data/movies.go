@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/lib/pq"
@@ -31,9 +30,7 @@ type Movie struct {
 // MovieModel struct wraps a sql.DB connection pool and allows us to work with Movie struct type
 // and the movies table in our database.
 type MovieModel struct {
-	DB       *sql.DB
-	InfoLog  *log.Logger
-	ErrorLog *log.Logger
+	DB *sql.DB
 }
 
 // Insert accepts a pointer to a movie struct, which should contain the data for the
@@ -220,11 +217,7 @@ func (m MovieModel) GetAll(title string, genres []string, filters Filters) ([]*M
 
 	// Importantly, defer a call to rows.Close() to ensure that the result set is closed
 	// before GetAll returns.
-	defer func() {
-		if err := rows.Close(); err != nil {
-			m.ErrorLog.Println(err)
-		}
-	}()
+	defer rows.Close()
 
 	// Declare a totalRecords variable
 	totalRecords := 0

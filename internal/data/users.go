@@ -15,6 +15,8 @@ var (
 	ErrDuplicateEmail = errors.New("duplicate email")
 )
 
+var AnonymousUser = &User{}
+
 // User type whose fields describe a user. Note, that we use the json:"-" struct tag to prevent
 // the Password and Version fields from appearing in any output when we encode it to JSON.
 // Also, notice that the Password field uses the custom password type defined below.
@@ -34,13 +36,17 @@ type UserModel struct {
 	DB *sql.DB
 }
 
-// password tyep is a struct containing the plaintext and hashed version of a password for a User.
+// password type is a struct containing the plaintext and hashed version of a password for a User.
 // The plaintext field is a *pointer* to a string, so that we're able to distinguish between a
 // plaintext password not being present in the struct at all, versus a plaintext password which
 // is the empty string "".
 type password struct {
 	plaintext *string
 	hash      []byte
+}
+
+func (u *User) IsAnonymous() bool {
+	return u == AnonymousUser
 }
 
 // Set calculates the bcrypt hash of a plaintext password, and stores both the has and the
