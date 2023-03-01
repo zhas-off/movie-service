@@ -2,13 +2,16 @@ package main
 
 import (
 	"errors"
+	"expvar"
 	"fmt"
-	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/felixge/httpsnoop"
+	"github.com/tomasen/realip"
 	"github.com/zhas-off/movie-service/internal/data"
 	"github.com/zhas-off/movie-service/internal/validator"
 	"golang.org/x/time/rate"
@@ -79,12 +82,8 @@ func (app *application) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only carry out the check if rate limited is enabled.
 		if app.config.limiter.enabled {
-			// Extract the client's IP address from the request
-			ip, _, err := net.SplitHostPort(r.RemoteAddr)
-			if err != nil {
-				app.serverErrorResponse(w, r, err)
-				return
-			}
+			// Use the realip.FromRequest function to get the client's real IP address.
+			ip := realip.FromRequest(r)
 
 			// Lock the mutex to prevent this code from being executed concurrently.
 			mu.Lock()
@@ -286,5 +285,36 @@ func (app *application) enableCORS(next http.Handler) http.Handler {
 		}
 
 		next.ServeHTTP(w, r)
+	})
+}
+
+func (app *application) metrics(next http.Handler) http.Handler {
+	// Initialize the new expvar variables when middleware chain is first build.
+	totalRequestsReceived := expvar.NewInt("total_requests_received")
+	totalResponsesSent := expvar.NewInt("total_responses_sent")
+	totalProcessingTimeMicroseconds := expvar.NewInt("total_processing_time_µs")
+	totalResponsesSentbyStatus := expvar.NewMap("total_responses_sent_by_status")
+
+	// Below runs for every request.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// use the Add method to increment the number of requests received by 1.
+		totalRequestsReceived.Add(1)
+
+		// Call the httpsnoop.CaptureMetrics function, passing in the next handler in the chain
+		// along with the existing http.ResponseWriter and http.Request. This returns the metrics
+		// struct.
+		metrics := httpsnoop.CaptureMetrics(next, w, r)
+
+		// On way back up middleware chain, increment the number of responses sent by 1.
+		totalResponsesSent.Add(1)
+
+		// Get the request processing time in microseconds from httpsnoop and increment the
+		// cumulative processing time.
+		totalProcessingTimeMicroseconds.Add(metrics.Duration.Microseconds())
+
+		// / Use the Add method to increment the count for the given status code by 1.
+		// Note, the expvar map is string-keyed, so we need to use the strconv.Itoa
+		// function to convert the status (an integer) to a string.
+		totalResponsesSentbyStatus.Add(strconv.Itoa(metrics.Code), 1)
 	})
 }

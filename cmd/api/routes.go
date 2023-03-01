@@ -1,6 +1,7 @@
 package main
 
 import (
+	"expvar"
 	"net/http"
 
 	"github.com/julienschmidt/httprouter"
@@ -18,7 +19,11 @@ func (app *application) routes() http.Handler {
 	// error handler for 405 Method Not Allowed responses
 	router.MethodNotAllowed = http.HandlerFunc(app.methodNotAllowedResponse)
 
+	//healthcheck
 	router.HandlerFunc(http.MethodGet, "/v1/healthcheck", app.healthcheckHandler)
+
+	// application metrics handler
+	router.Handler(http.MethodGet, "/debug/vars", expvar.Handler())
 
 	// Use the requirePermission() middleware on each of the /v1/movies** endpoints,
 	// passing in the required permission code as the first parameter.
@@ -36,5 +41,5 @@ func (app *application) routes() http.Handler {
 	router.HandlerFunc(http.MethodPost, "/v1/tokens/authentication", app.createAuthenticationTokenHandler)
 
 	// Wrap the router with the panic recovery middleware and rate limit middleware.
-	return app.recoverPanic(app.enableCORS(app.rateLimit(app.authenticate(router))))
+	return app.metrics(app.recoverPanic(app.enableCORS(app.rateLimit(app.authenticate(router)))))
 }
